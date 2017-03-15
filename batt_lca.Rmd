@@ -1,0 +1,107 @@
+---
+title: "Battery LCA Workflow"
+author: "Julian Ricardo"
+date: "March 15, 2017"
+output: html_document
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+asinh_trans <- function(){
+  trans_new(name = 'asinh', transform = function(x) asinh(x), 
+            inverse = function(x) sinh(x))
+}
+reverselog_trans <- function(base = exp(1)) {
+  trans <- function(x) -log(x, base)
+  inv <- function(x) base^(-x)
+  trans_new(paste0("reverselog-", format(base)), trans, inv, 
+            log_breaks(base = base), 
+            domain = c(1e-100, Inf))
+}
+to_kg <- function(lb_val) {
+  return(lb_val/2.205)
+}
+```
+
+This R Markdown document will run through the systems developed to estimate the time-dependent emissions impacts of using solar and energy storage to shave peak loads in buildings.
+
+## Inputs and Outputs
+
+### Grid data
+```{r grid_input, include=FALSE}
+coal <- c("BIT", "LIG", "SC", "SGC", "SUB", "WC")
+petroleum <- c("DFO", "JF", "KER", "PC", "RFO", "WO")
+biomass <- c("BLQ", "DG", "MSB", "OBG", "OBS", "WDL", "WDS")
+cbb_qual.n <- c("Biomass" = "#E69F00", "Coal-based" = "#999999",
+                "Hydro" = "#CC79A7", "Landfill Gas" = "#009E73",
+                "Nat. Gas" = "#F0E442", "Nuclear" = "#000000", 
+                "Petro-fuels" = "#0072B2", "PV" = "#D55E00",
+                "Wind" = "#56B4E9")
+sim_results <- feather::read_feather("input/full_df.feather")
+plants <- data.table::fread("input/plants_all.csv") %>%
+  select(orispl, isorto, lat, lon,
+         plprmfl, namepcap, plc2erta) %>% 
+  mutate(namepcap = namepcap*0.87,
+         plc2erta = to_kg(plc2erta),
+         fuel_type = case_when(
+                                .$plprmfl == "WAT" ~ "Hydro",
+                                .$plprmfl == "SUN" ~"PV",
+                                .$plprmfl == "WND" ~ "Wind",
+                                .$plprmfl == "NG" ~"Nat. Gas",
+                                .$plprmfl == "NUC" ~ "Nuclear",
+                                .$plprmfl == "LFG" ~ "Landfill Gas",
+                                .$plprmfl %in% biomass ~ "Biomass",
+                                .$plprmfl %in% petroleum ~ "Petro-fuels",
+                                .$plprmfl %in% coal ~"Coal-based",
+                                TRUE ~ .$plprmfl
+                                )
+  )
+theme_batt <- theme(panel.background = element_rect(colour = "gray75", fill = "gray80")) +
+                          theme(panel.grid.major = element_line(colour = "gray85")) +
+                          theme(panel.grid.minor = element_line(colour = "gray85")) +
+                          theme(legend.position = "none")
+```
+
+First, we have to define the resources on the electrical grid, both in terms of their costs and emissions. While we use the costs to determine the priority with which power plants fire, we record the grid's time-varying cumulative emissions rate to estimate the marginal emissions associated with building energy use.
+
+Since we developed building models for New York City, we use NYISO territory power plants, but plant data exists for a much larger inventory of grid resources.
+
+```{r grid_plants, echo=FALSE}
+inputPanel(
+  selectInput("grid_terr", label = "Grid territory:",
+              choices = unique(plants$isorto), selected = "NYISO"),
+  
+  radioButtons("var", "Variable to display:",
+               c("Capacity (MW)" = "namepcap",
+                 "EF (kg CO2eq / MWh)" = "plc2erta"))
+)
+
+renderPlot({
+  units <- ifelse(input$var == "namepcap",
+                   "MW",
+                   "kg CO2eq / MW")
+  plants <- filter(plants,
+                   isorto == input$grid_terr,
+                   plants[[input$var]] > 0,
+                   fuel_type != "")
+  
+  ggplot(plants,
+         aes(x = factor(fuel_type),
+             fill = factor(fuel_type))) +
+    geom_boxplot(aes(y = plants[[input$var]]),
+                 varwidth = TRUE,
+                 outlier.shape = NA) +
+    geom_jitter(aes(y = plants[[input$var]], fill = factor(fuel_type)),
+                shape = 21, alpha = 1/2,
+                position = position_jitter(w = 0.2, h = 0.2)) +
+    scale_y_log10(limits = quantile(plants[[input$var]], c(0.01, 0.99))) +
+    labs(x = "",
+         y = units) +
+    theme_batt
+})
+```
+
+
+
