@@ -31,9 +31,15 @@ This R Markdown document will run through the systems developed to estimate the 
 
 ### Grid data
 ```{r grid_input, include=FALSE}
-coal <- c("BIT", "LIG", "SC", "SGC", "SUB", "WC")
-petroleum <- c("DFO", "JF", "KER", "PC", "RFO", "WO")
-biomass <- c("BLQ", "DG", "MSB", "OBG", "OBS", "WDL", "WDS")
+coal <- c("BIT", "LIG", "SC", "SGC",
+          "SUB", "WC")
+petroleum <- c("BFG", "COG", "DFO", "JF",
+               "KER", "PC", "RFO", "RG",
+               "TDF", "WO")
+biomass <- c("AB", "BLQ", "DG", "MSB",
+             "MSW", "OBG", "OBS", "OG",
+             "WDL", "WDS")
+other <- c("GEO", "MWH", "PUR", "WH")
 cbb_qual.n <- c("Biomass" = "#E69F00", "Coal-based" = "#999999",
                 "Hydro" = "#CC79A7", "Landfill Gas" = "#009E73",
                 "Nat. Gas" = "#F0E442", "Nuclear" = "#000000", 
@@ -54,7 +60,8 @@ plants <- data.table::fread("input/plants_all.csv") %>%
                                 .$plprmfl == "LFG" ~ "Landfill Gas",
                                 .$plprmfl %in% biomass ~ "Biomass",
                                 .$plprmfl %in% petroleum ~ "Petro-fuels",
-                                .$plprmfl %in% coal ~"Coal-based",
+                                .$plprmfl %in% coal ~ "Coal-based",
+                                .$plprmfl %in% other ~ "Other",
                                 TRUE ~ .$plprmfl
                                 )
   )
