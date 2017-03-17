@@ -23,31 +23,9 @@ reverselog_trans <- function(base = exp(1)) {
 to_kg <- function(lb_val) {
   return(lb_val/2.205)
 }
-```
-
-This R Markdown document will run through the systems developed to estimate the time-dependent emissions impacts of using solar and energy storage to shave peak loads in buildings.
-
-## Inputs and Outputs
-
-### Grid data
-```{r grid_input, include=FALSE}
-coal <- c("BIT", "LIG", "SC", "SGC",
-          "SUB", "WC")
-petroleum <- c("BFG", "COG", "DFO", "JF",
-               "KER", "PC", "RFO", "RG",
-               "TDF", "WO")
-biomass <- c("AB", "BLQ", "DG", "MSB",
-             "MSW", "OBG", "OBS", "OG",
-             "WDL", "WDS")
-other <- c("GEO", "MWH", "PUR", "WH")
-cbb_qual.n <- c("Biomass" = "#E69F00", "Coal-based" = "#999999",
-                "Hydro" = "#CC79A7", "Landfill Gas" = "#009E73",
-                "Nat. Gas" = "#F0E442", "Nuclear" = "#000000", 
-                "Petro-fuels" = "#0072B2", "PV" = "#D55E00",
-                "Wind" = "#56B4E9")
-sim_results <- feather::read_feather("input/full_df.feather")
-plants <- data.table::fread("input/plants_all.csv") %>%
-  select(orispl, isorto, lat, lon,
+scrub_plants <- function(.data) {
+  select(.data, 
+         orispl, isorto, lat, lon,
          plprmfl, namepcap, plc2erta) %>% 
   mutate(namepcap = namepcap*0.87,
          plc2erta = to_kg(plc2erta),
@@ -63,17 +41,63 @@ plants <- data.table::fread("input/plants_all.csv") %>%
                                 .$plprmfl %in% coal ~ "Coal-based",
                                 .$plprmfl %in% other ~ "Other",
                                 TRUE ~ .$plprmfl
-                                )
-  )
-theme_batt <- theme(panel.background = element_rect(colour = "gray75", fill = "gray80")) +
+                                )) %>% 
+  filter(isorto != "",
+         fuel_type != "")
+}
+make_dispatch <- function(.data) {
+  mutate(.data,
+         mc_rand = rnorm(nrow(.data), mc_m, mc_sd),
+         mc_rand = ifelse(mc_rand < 0, 0, mc_rand)) %>%
+    arrange(mc_rand) %>% 
+    mutate(namepcap_cumul = cumsum(namepcap),
+           plc2erta_wtd = namepcap*plc2erta,
+           plc2erta_cumul = cumsum(plc2erta_wtd)/namepcap_cumul)
+}
+```
+
+This R Markdown document will run through the systems developed to estimate the time-dependent emissions impacts of using solar and energy storage to shave peak loads in buildings.
+
+## Grid Inputs
+```{r grid_input, include=FALSE}
+coal <- c("BIT", "LIG", "SC", "SGC",
+          "SUB", "WC")
+petroleum <- c("BFG", "COG", "DFO", "JF",
+               "KER", "PC", "RFO", "RG",
+               "TDF", "WO")
+biomass <- c("AB", "BLQ", "DG", "MSB",
+             "MSW", "OBG", "OBS", "OG",
+             "WDL", "WDS")
+other <- c("GEO", "MWH", "PUR", "WH")
+cbb_qual.n <- c("Biomass" = "#E69F00", "Coal-based" = "#999999",
+                "Hydro" = "#CC79A7", "Landfill Gas" = "#009E73",
+                "Nat. Gas" = "#F0E442", "Nuclear" = "#000000", 
+                "Other" = "#762a83" , "Petro-fuels" = "#0072B2",
+                "PV" = "#D55E00", "Wind" = "#56B4E9")
+sim_results <- feather::read_feather("input/full_df.feather")
+plant_costs <- data.table::fread("input/marg_costs.csv") %>% 
+  select(-prim_mov,-c(heat_rt:VOM)) %>%
+  rename(plprmfl = prim_fuel) %>% 
+  group_by(plprmfl) %>% 
+  summarise(mc_m = mean(MC), mc_sd = sd(MC)) %>% 
+  mutate(mc_sd = case_when(
+                            is.na(.$mc_sd) ~ 0.05*.$mc_m,
+                            TRUE ~ .$mc_sd
+  ))
+theme_batt <- theme(panel.background = element_rect(colour = "gray75", fill = "white")) +
                           theme(panel.grid.major = element_line(colour = "gray85")) +
                           theme(panel.grid.minor = element_line(colour = "gray85")) +
                           theme(legend.position = "none")
 ```
 
-First, we have to define the resources on the electrical grid, both in terms of their costs and emissions. While we use the costs to determine the priority with which power plants fire, we record the grid's time-varying cumulative emissions rate to estimate the marginal emissions associated with building energy use.
+First, we have to load up data on power plants from each electrical grid based on territory name. We will focus on the nameplate capacities and CO2-equivalent emissions rates of these plants.
 
-Since we developed building models for New York City, we use NYISO territory power plants, but plant data exists for a much larger inventory of grid resources.
+```{r scrub_plants}
+plants <- data.table::fread("input/plants_all.csv") %>%
+  scrub_plants() %>% 
+  left_join(plant_costs, by = "plprmfl") %>% 
+  filter(!is.na(mc_m))
+```
 
 ```{r grid_plants, echo=FALSE}
 inputPanel(
@@ -87,28 +111,111 @@ inputPanel(
 
 renderPlot({
   units <- ifelse(input$var == "namepcap",
-                   "MW",
-                   "kg CO2eq / MW")
-  plants <- filter(plants,
-                   isorto == input$grid_terr,
-                   plants[[input$var]] > 0,
-                   fuel_type != "")
+                  "MW",
+                  "kg CO2eq / MWh")
   
-  ggplot(plants,
+  plants_terr <- filter(plants,
+                        isorto == input$grid_terr,
+                        plants[[input$var]] > 0)
+  
+  ggplot(plants_terr,
          aes(x = factor(fuel_type),
+             y = plants_terr[[input$var]],
              fill = factor(fuel_type))) +
-    geom_boxplot(aes(y = plants[[input$var]]),
-                 varwidth = TRUE,
+    geom_boxplot(varwidth = TRUE,
                  outlier.shape = NA) +
-    geom_jitter(aes(y = plants[[input$var]], fill = factor(fuel_type)),
-                shape = 21, alpha = 1/2,
-                position = position_jitter(w = 0.2, h = 0.2)) +
-    scale_y_log10(limits = quantile(plants[[input$var]], c(0.01, 0.99))) +
+    geom_jitter(shape = 21, alpha = 1/2,
+                position = position_jitter(w = 0.2)) +
+    scale_y_log10(limits = quantile(plants_terr[[input$var]], c(0.01, 0.99))) +
+    scale_fill_manual(name = "Fuel", values = cbb_qual.n) +
     labs(x = "",
          y = units) +
     theme_batt
 })
 ```
 
+## NYISO case study
+
+Based on average marginal costs by fuel type and generator type, which we calculate based on methods in [NEED CITATION], we determine the priority with which power plants fire. From there, we can estimate the grid's time-varying cumulative emissions rate. Since we have a 5-min load profile from NYISO, we use NYISO power plants to for all following visualizations.
+
+### Drawing a dispatch curve
+
+```{r clean_dispatch}
+nyiso_disp <- filter(plants, isorto == "NYISO") %>% 
+  make_dispatch() %>% 
+  mutate(run = 1)
+
+full_disp <- nyiso_disp
+
+for (i in 1:10) {
+    disp <- make_dispatch(nyiso_disp) %>% 
+      mutate(run = i)
+    full_disp <- rbind.data.frame(full_disp, disp)
+}
+```
+
+```{r dispatch, echo=FALSE, fig.height=10}
+inputPanel(
+  radioButtons("var2", "Variable to display:",
+               c("$ / kWh" = "mc_rand",
+                 "Cumul. EF (g CO2eq / kWh)" = "plc2erta_cumul")),
+  
+  sliderInput("run_select", "Select a curve:",
+              1, 10, 1, ticks = FALSE)
+  # actionButton("redraw", "Redraw curve",
+  #   style="color: #fff; background-color: #999999; border-color: #999999")
+)
+
+renderPlot({
+  units <- ifelse(input$var2 == "mc_rand",
+                  "$ / kWh",
+                  "g CO2eq / kWh")
+  
+  input$run_select
+  
+  isolate ({
+    sample_run <- filter(full_disp, run == input$run_select)
+  })
+  
+  ggplot(sample_run,
+         aes(x = namepcap_cumul,
+             y = sample_run[[input$var2]],
+             fill = factor(fuel_type),
+             size = namepcap)) +
+    geom_point(data = full_disp,
+               aes(x = namepcap_cumul,
+                   y = full_disp[[input$var2]],
+                   fill = factor(fuel_type),
+                   size = namepcap),
+               alpha = 1/3,
+               color = "gray75") +
+    geom_point(shape = 21) +
+    scale_fill_manual(name = "Fuel",
+                      values = cbb_qual.n,
+                      guide = guide_legend(override.aes = list(size = 6))) +
+    scale_size(name = bquote(MW[plant]),
+               breaks = c(100,500,1500),
+               range = c(3,18)) +
+    labs(x = "",
+         y = units) +
+    theme_batt +
+    theme(legend.position = "right",
+          legend.box = "vertical")
+})
+```
+
+### Visualizing Grid Load Profile
+
+So far, we've only considered part of the problem. The power plants that fire are important, but they will change as costs and demands for energy fluctuate in time. Below, view weekly snapshots of the NYISO load profile, or a full-year heatmap. Of course, there are geospatial effects too, but we ignore them here.
+
+```{r, echo = FALSE}
+tabsetPanel(
+  tabPanel("Weekly"),
+  tabPanel("Annual")
+)
+```
+
+
+Ultimately, we can then estimate the marginal emissions associated with building energy use at any given time.
 
 
