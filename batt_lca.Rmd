@@ -8,7 +8,10 @@ runtime: shiny
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+library(plyr)
 library(tidyverse)
+library(lubridate)
+library(reshape2)
 asinh_trans <- function(){
   trans_new(name = 'asinh', transform = function(x) asinh(x), 
             inverse = function(x) sinh(x))
@@ -77,20 +80,18 @@ cbb_qual.n <- c("Biomass" = "#E69F00", "Coal-based" = "#999999",
 sim_results <- feather::read_feather("input/full_df.feather")
 plant_costs <- data.table::fread("input/marg_costs.csv") %>% 
   select(-prim_mov,-c(heat_rt:VOM)) %>%
-  rename(plprmfl = prim_fuel) %>% 
-  group_by(plprmfl) %>% 
-  summarise(mc_m = mean(MC), mc_sd = sd(MC)) %>% 
-  mutate(mc_sd = case_when(
-                            is.na(.$mc_sd) ~ 0.05*.$mc_m,
-                            TRUE ~ .$mc_sd
-  ))
-theme_batt <- theme(panel.background = element_rect(colour = "gray75", fill = "white")) +
-                          theme(panel.grid.major = element_line(colour = "gray85")) +
-                          theme(panel.grid.minor = element_line(colour = "gray85")) +
-                          theme(legend.position = "none")
+  transmute(MC, plprmfl = prim_fuel) %>% 
+  group_by(plprmfl) %>%
+  summarise(mc_m = mean(MC), mc_sd = sd(MC)) %>%
+  mutate(mc_sd = case_when(is.na(.$mc_sd) ~ 0.05*.$mc_m,
+                           TRUE ~ .$mc_sd))
+theme_base <- theme(panel.background = element_rect(colour = "gray75", fill = "white")) +
+                    theme(panel.grid.major = element_line(colour = "gray85")) +
+                    theme(panel.grid.minor = element_line(colour = "gray85")) +
+                    theme(legend.position = "none")
 ```
 
-First, we have to load up data on power plants from each electrical grid based on territory name. We will focus on the nameplate capacities and CO2-equivalent emissions rates of these plants.
+First, we load up data on power plants from each electrical grid based on territory name. We will focus on the nameplate capacities and CO2-equivalent emissions rates of these plants.
 
 ```{r scrub_plants}
 plants <- data.table::fread("input/plants_all.csv") %>%
@@ -100,45 +101,71 @@ plants <- data.table::fread("input/plants_all.csv") %>%
 ```
 
 ```{r grid_plants, echo=FALSE}
-inputPanel(
-  selectInput("grid_terr", label = "Grid territory:",
-              choices = unique(plants$isorto), selected = "NYISO"),
-  
-  radioButtons("var", "Variable to display:",
-               c("Capacity (MW)" = "namepcap",
-                 "EF (kg CO2eq / MWh)" = "plc2erta"))
-)
+df <- reactive({
+  filter(plants,
+         isorto == input$grid_terr,
+         plants[[input$var]] > 0) %>% 
+    group_by(fuel_type) %>% 
+    mutate(Count = n()) %>% 
+    select(fuel_type, Count,
+           contains("namepcap"),
+           contains("plc2erta")) %>% 
+    summarise_if(is.numeric, c("median", "sd")) %>%
+    mutate(Count_median = trunc(Count_median)) %>% 
+    select(-Count_sd) %>% 
+    rename("Fuel Type" = fuel_type,
+           "Count" = Count_median,
+           "Median Nameplate MWh" = namepcap_median,
+           "Median EF CO2eq" = plc2erta_median,
+           "SE Nameplate MWh" = namepcap_sd,
+           "SE CO2eq" = plc2erta_sd)
+    })
 
-renderPlot({
-  units <- ifelse(input$var == "namepcap",
-                  "MW",
-                  "kg CO2eq / MWh")
-  
-  plants_terr <- filter(plants,
-                        isorto == input$grid_terr,
-                        plants[[input$var]] > 0)
-  
-  ggplot(plants_terr,
-         aes(x = factor(fuel_type),
-             y = plants_terr[[input$var]],
-             fill = factor(fuel_type))) +
-    geom_boxplot(varwidth = TRUE,
-                 outlier.shape = NA) +
-    geom_jitter(shape = 21, alpha = 1/2,
-                position = position_jitter(w = 0.2)) +
-    scale_y_log10(limits = quantile(plants_terr[[input$var]], c(0.01, 0.99))) +
-    scale_fill_manual(name = "Fuel", values = cbb_qual.n) +
-    labs(x = "",
-         y = units) +
-    theme_batt
-})
+tabsetPanel(
+  tabPanel("Graph",
+          inputPanel(
+                     selectInput("grid_terr", label = "Grid territory:",
+                                 choices = unique(plants$isorto), selected = "NYISO"),
+                      
+                     radioButtons("var", "Variable to display:",
+                                  c("Capacity (MW)" = "namepcap",
+                                  "EF (kg CO2eq / MWh)" = "plc2erta"))
+                    ),
+
+          boxplot <- renderPlot({
+                      units <- ifelse(input$var == "namepcap",
+                                      "MW",
+                                      "kg CO2eq / MWh")
+                      
+                      plants_terr <- filter(plants,
+                                            isorto == input$grid_terr,
+                                            plants[[input$var]] > 0)
+                      
+                      ggplot(plants_terr,
+                             aes(x = factor(fuel_type),
+                                 y = plants_terr[[input$var]],
+                                 fill = factor(fuel_type))) +
+                        geom_boxplot(varwidth = TRUE,
+                                     outlier.shape = NA) +
+                        geom_jitter(shape = 21, alpha = 1/2,
+                                    position = position_jitter(w = 0.2)) +
+                        scale_y_log10(limits = quantile(plants_terr[[input$var]], c(0.01, 0.99))) +
+                        scale_fill_manual(name = "Fuel", values = cbb_qual.n) +
+                        labs(x = "",
+                             y = units) +
+                        theme_base})
+          ),
+  tabPanel("Data", renderTable({df()}))
+)
 ```
 
 ## NYISO case study
 
-Based on average marginal costs by fuel type and generator type, which we calculate based on methods in [NEED CITATION], we determine the priority with which power plants fire. From there, we can estimate the grid's time-varying cumulative emissions rate. Since we have a 5-min load profile from NYISO, we use NYISO power plants to for all following visualizations.
+Based on average marginal costs by fuel type and generator type, which we calculate based on methods in [NEED CITATION], we determine the priority with which power plants fire. Depending on the level of cumulative demand for electricity, grid operators allow bids for energy to be supplied until enough are submitted to satisfy load. At this point, the grid operator will pay all accepted bidders the highest marginal cost among all accepted bids.
 
-### Drawing a dispatch curve
+Assuming that the subset of power plants that fire follows this model, we can then estimate the grid's time-varying cumulative emissions rate. Since we have a 5-min load profile from NYISO, we use NYISO power plants to for all following visualizations.
+
+### Drawing a dispatch order curve
 
 ```{r clean_dispatch}
 nyiso_disp <- filter(plants, isorto == "NYISO") %>% 
@@ -198,20 +225,94 @@ renderPlot({
                range = c(3,18)) +
     labs(x = "",
          y = units) +
-    theme_batt +
+    theme_base +
     theme(legend.position = "right",
-          legend.box = "vertical")
-})
+          legend.box = "vertical")})
 ```
 
 ### Visualizing Grid Load Profile
 
 So far, we've only considered part of the problem. The power plants that fire are important, but they will change as costs and demands for energy fluctuate in time. Below, view weekly snapshots of the NYISO load profile, or a full-year heatmap. Of course, there are geospatial effects too, but we ignore them here.
 
+```{r}
+nyiso_load.min <- data.table::fread("input/2014pal_combined.csv") %>% 
+  transmute(mw,
+            date_time = as.POSIXct(strptime(time_5min, format = "%m/%d/%Y %H:%M")),
+            hr = hour(date_time),
+            day = wday(date_time, label = TRUE),
+            qtr = paste0("Q", quarter(date_time, with_year = FALSE)),
+            wk = week(date_time))
+
+hr_labels <- unlist(lapply(seq(3,21,3),
+                           function(x) ifelse(x>10,
+                                              paste0(x, ":00"),
+                                              paste0("0", x, ":00"))))
+
+theme_heatmap <- theme(panel.background = element_blank(),
+                       panel.border = element_blank(),
+                       axis.line = element_blank(),
+                       axis.ticks = element_blank(),
+                       axis.text.y = element_text(angle = 33, hjust = 1, size = 8),
+                       axis.text.x = element_text(angle = 33, vjust = 1, hjust = 1),
+                       strip.background = element_blank())
+```
+
+
 ```{r, echo = FALSE}
 tabsetPanel(
-  tabPanel("Weekly"),
-  tabPanel("Annual")
+  tabPanel("Annual",
+           inputPanel(
+             radioButtons("var3", "Variable to display:",
+                          c("Mean" = "mean",
+                            "Std. Dev." = "sd"))
+           ),
+           
+           heatmap <- renderPlot({
+            nyiso_load.var <- nyiso_load.min %>% 
+                select(-date_time, -wk) %>% 
+                group_by(qtr, day, hr) %>% 
+                summarise_all(c("mean", "sd")) %>%
+                select(hr, day, qtr, contains(input$var3)) %>% 
+                melt(id.vars = c("qtr", "day", "hr"),
+                     measure.vars = input$var3) %>%
+                ddply(.(variable), transform, rescale = scale(value)) %>% 
+                filter(variable == input$var3,
+                       !is.na(day))
+             
+             ggplot(nyiso_load.var,
+                    aes(y = day, x = hr, fill = value)) +
+               facet_wrap("qtr") +
+               geom_tile(color = "gray85") +
+               scale_x_continuous(breaks = seq(2,20,3),
+                                  labels = hr_labels,
+                                  expand = c(0,0)) +
+               scale_fill_gradient2(name = "MW", low = "#7b3294", high = "#008837",
+                                    midpoint = mean(nyiso_load.var$value)) +
+               labs(x = "",
+                    y = "") +
+               theme_heatmap
+           })
+  ),
+  tabPanel("Weekly",
+        
+         inputPanel(
+           sliderInput("weeks", "Weeks to display:",
+                       1, 52, value = c(1,52))
+         ),
+
+         year_plot <- renderPlot({
+           nyiso_load.week <- nyiso_load.min %>%
+             select(mw, wk, date_time) %>%
+             filter(wk >= input$weeks[1] & wk <= input$weeks[2])
+
+           ggplot(nyiso_load.week,
+                  aes(y = mw, x = date_time)) +
+               geom_line() +
+               labs(x = "",
+                    y = "MW") +
+               theme_base
+         })
+  )
 )
 ```
 
