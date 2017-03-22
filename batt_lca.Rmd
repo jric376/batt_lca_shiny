@@ -4,6 +4,8 @@ author: "Julian Ricardo"
 date: "March 15, 2017"
 output: html_document
 runtime: shiny
+bibliography: batt_lca_shiny.bib
+csl: nature.csl
 ---
 
 ```{r setup, include=FALSE}
@@ -29,9 +31,10 @@ to_kg <- function(lb_val) {
 scrub_plants <- function(.data) {
   select(.data, 
          orispl, isorto, lat, lon,
-         plprmfl, namepcap, plc2erta) %>% 
+         plprmfl, namepcap, plc2erta, capfac) %>% 
   mutate(namepcap = namepcap*0.87,
          plc2erta = to_kg(plc2erta),
+         capfac = ifelse(capfac < 0, 0, capfac),
          fuel_type = case_when(
                                 .$plprmfl == "WAT" ~ "Hydro",
                                 .$plprmfl == "SUN" ~"PV",
@@ -61,6 +64,8 @@ make_dispatch <- function(.data) {
 
 This R Markdown document will run through the systems developed to estimate the time-dependent emissions impacts of using solar and energy storage to shave peak loads in buildings.
 
+****
+
 ## Grid Inputs
 ```{r grid_input, include=FALSE}
 coal <- c("BIT", "LIG", "SC", "SGC",
@@ -85,13 +90,16 @@ plant_costs <- data.table::fread("input/marg_costs.csv") %>%
   summarise(mc_m = mean(MC), mc_sd = sd(MC)) %>%
   mutate(mc_sd = case_when(is.na(.$mc_sd) ~ 0.05*.$mc_m,
                            TRUE ~ .$mc_sd))
-theme_base <- theme(panel.background = element_rect(colour = "gray75", fill = "white")) +
+theme_base <- theme(text = element_text(size = 14),
+                    panel.background = element_rect(colour = "gray75", fill = "white")) +
                     theme(panel.grid.major = element_line(colour = "gray85")) +
                     theme(panel.grid.minor = element_line(colour = "gray85")) +
                     theme(legend.position = "none")
 ```
 
-First, we load up data on power plants from each electrical grid based on territory name. We will focus on the nameplate capacities and CO2-equivalent emissions rates of these plants.
+First, we load up data on power plants from the electrical grid of interest, based on territory name. We will focus on the nameplate capacities and CO2-equivalent emissions rates of these plants, though the full dataset and accompanying documentation for the US EPA's eGrid2012[@eGRID2012] data are available [here](https://www.epa.gov/energy/emissions-generation-resource-integrated-database-egrid).
+
+The code below also assigns marginal costs to each power plant by fuel type and generator type, calculated based on methods[@Gilmore2010] in the literature and publicly available data[@EIA2014b, @EIA2015, @EIA2014a]. In so doing, we estimate the priority with which power plants fire. Documented capacity factors may also be incorporated into future iterations of the grid dispatch model.
 
 ```{r scrub_plants}
 plants <- data.table::fread("input/plants_all.csv") %>%
@@ -109,16 +117,19 @@ df <- reactive({
     mutate(Count = n()) %>% 
     select(fuel_type, Count,
            contains("namepcap"),
-           contains("plc2erta")) %>% 
+           contains("plc2erta"),
+           contains("capfac")) %>% 
     summarise_if(is.numeric, c("median", "sd")) %>%
     mutate(Count_median = trunc(Count_median)) %>% 
     select(-Count_sd) %>% 
     rename("Fuel Type" = fuel_type,
            "Count" = Count_median,
-           "Median Nameplate MWh" = namepcap_median,
+           "Median MWh" = namepcap_median,
+           "SD MWh" = namepcap_sd,
            "Median EF CO2eq" = plc2erta_median,
-           "SE Nameplate MWh" = namepcap_sd,
-           "SE CO2eq" = plc2erta_sd)
+           "SD CO2eq" = plc2erta_sd,
+           "Median Cap. Factor" = capfac_median,
+           "SD Cap. Factor" = capfac_sd)
     })
 
 tabsetPanel(
@@ -129,13 +140,15 @@ tabsetPanel(
                       
                      radioButtons("var", "Variable to display:",
                                   c("Capacity (MW)" = "namepcap",
-                                  "EF (kg CO2eq / MWh)" = "plc2erta"))
+                                    "EF (kg CO2eq / MWh)" = "plc2erta",
+                                    "Capacity Factor" = "capfac"))
                     ),
 
-          boxplot <- renderPlot({
-                      units <- ifelse(input$var == "namepcap",
-                                      "MW",
-                                      "kg CO2eq / MWh")
+          boxplot <- renderPlot({ 
+                      units <- switch(input$var,
+                                      namepcap = "MW",
+                                      plc2erta = "kg CO2eq / MWh",
+                                      capfac = NULL)
                       
                       plants_terr <- filter(plants,
                                             isorto == input$grid_terr,
@@ -151,7 +164,7 @@ tabsetPanel(
                                     position = position_jitter(w = 0.2)) +
                         scale_y_log10(limits = quantile(plants_terr[[input$var]], c(0.01, 0.99))) +
                         scale_fill_manual(name = "Fuel", values = cbb_qual.n) +
-                        labs(x = "",
+                        labs(x = NULL,
                              y = units) +
                         theme_base})
           ),
@@ -161,7 +174,7 @@ tabsetPanel(
 
 ## NYISO case study
 
-Based on average marginal costs by fuel type and generator type, which we calculate based on methods in [NEED CITATION], we determine the priority with which power plants fire. Depending on the level of cumulative demand for electricity, grid operators allow bids for energy to be supplied until enough are submitted to satisfy load. At this point, the grid operator will pay all accepted bidders the highest marginal cost among all accepted bids.
+Depending on the level of cumulative demand for electricity, grid operators allow bids for energy to be supplied until enough are submitted to satisfy load. At this point, the grid operator will pay all accepted bidders the highest marginal cost among all accepted bids.
 
 Assuming that the subset of power plants that fire follows this model, we can then estimate the grid's time-varying cumulative emissions rate. Since we have a 5-min load profile from NYISO, we use NYISO power plants to for all following visualizations.
 
@@ -182,59 +195,91 @@ for (i in 1:10) {
 ```
 
 ```{r dispatch, echo=FALSE, fig.height=10}
-inputPanel(
-  radioButtons("var2", "Variable to display:",
-               c("$ / kWh" = "mc_rand",
-                 "Cumul. EF (g CO2eq / kWh)" = "plc2erta_cumul")),
-  
-  sliderInput("run_select", "Select a curve:",
-              1, 10, 1, ticks = FALSE)
-  # actionButton("redraw", "Redraw curve",
-  #   style="color: #fff; background-color: #999999; border-color: #999999")
-)
 
-renderPlot({
-  units <- ifelse(input$var2 == "mc_rand",
-                  "$ / kWh",
-                  "g CO2eq / kWh")
-  
-  input$run_select
-  
-  isolate ({
-    sample_run <- filter(full_disp, run == input$run_select)
-  })
-  
-  ggplot(sample_run,
-         aes(x = namepcap_cumul,
-             y = sample_run[[input$var2]],
-             fill = factor(fuel_type),
-             size = namepcap)) +
-    geom_point(data = full_disp,
-               aes(x = namepcap_cumul,
-                   y = full_disp[[input$var2]],
-                   fill = factor(fuel_type),
-                   size = namepcap),
-               alpha = 1/3,
-               color = "gray75") +
-    geom_point(shape = 21) +
-    scale_fill_manual(name = "Fuel",
-                      values = cbb_qual.n,
-                      guide = guide_legend(override.aes = list(size = 6))) +
-    scale_size(name = bquote(MW[plant]),
-               breaks = c(100,500,1500),
-               range = c(3,18)) +
-    labs(x = "",
-         y = units) +
-    theme_base +
-    theme(legend.position = "right",
-          legend.box = "vertical")})
+
+tabsetPanel(
+  tabPanel("Graph",
+          inputPanel(
+            radioButtons("var2", "Variable to display:",
+                         c("$ / kWh" = "mc_rand",
+                           "Cumul. EF (g CO2eq / kWh)" = "plc2erta_cumul")),
+            
+            sliderInput("run_select", "Select a curve:",
+                        1, 10, 1, ticks = FALSE)
+            # actionButton("redraw", "Redraw curve",
+            #   style="color: #fff; background-color: #999999; border-color: #999999")
+          ),
+
+          renderPlot({units <- ifelse(input$var2 == "mc_rand",
+                                      "$ / kWh",
+                                      "g CO2eq / kWh")
+                      
+                      input$run_select
+                      
+                      isolate ({
+                        sample_run <- filter(full_disp, run == input$run_select)
+                      })
+                      
+                      ggplot(sample_run,
+                             aes(x = namepcap_cumul,
+                                 y = sample_run[[input$var2]],
+                                 fill = factor(fuel_type),
+                                 size = namepcap)) +
+                        geom_point(data = full_disp,
+                                   aes(x = namepcap_cumul,
+                                       y = full_disp[[input$var2]],
+                                       fill = factor(fuel_type),
+                                       size = namepcap),
+                                   alpha = 1/3,
+                                   color = "gray75") +
+                        geom_point(shape = 21) +
+                        scale_fill_manual(name = "Fuel",
+                                          values = cbb_qual.n,
+                                          guide = guide_legend(override.aes = list(size = 6))) +
+                        scale_size(name = bquote(MW[plant]),
+                                   breaks = c(100,500,1500),
+                                   range = c(3,18)) +
+                        labs(x = "",
+                             y = units) +
+                        theme_base +
+                        theme(legend.position = "right",
+                              legend.box = "vertical")
+                      })
+          ),
+  tabPanel("Data",
+           h3("\n"),
+           output$downloadDispatch <- downloadHandler(
+             filename = function() {
+               "NYISO_plant_disp.csv"
+             },
+             content = function(con) {
+              write.csv(disp, con) 
+             }
+           )
+           )
+)
 ```
 
 ### Visualizing Grid Load Profile
 
 So far, we've only considered part of the problem. The power plants that fire are important, but they will change as costs and demands for energy fluctuate in time. Below, view weekly snapshots of the NYISO load profile, or a full-year heatmap. Of course, there are geospatial effects too, but we ignore them here.
+```{r grid_load_setup, include = FALSE}
+hr_labels <- unlist(lapply(seq(3,21,3),
+                           function(x) ifelse(x>10,
+                                              paste0(x, ":00"),
+                                              paste0("0", x, ":00"))))
 
-```{r}
+theme_heatmap <- theme(text = element_text(size = 14),
+                       panel.background = element_blank(),
+                       panel.border = element_blank(),
+                       axis.line = element_blank(),
+                       axis.ticks = element_blank(),
+                       axis.text.y = element_text(angle = 33, hjust = 1),
+                       axis.text.x = element_text(angle = 33, vjust = 1, hjust = 1),
+                       strip.background = element_blank())
+```
+
+```{r grid_load_input}
 nyiso_load.min <- data.table::fread("input/2014pal_combined.csv") %>% 
   transmute(mw,
             date_time = as.POSIXct(strptime(time_5min, format = "%m/%d/%Y %H:%M")),
@@ -242,23 +287,10 @@ nyiso_load.min <- data.table::fread("input/2014pal_combined.csv") %>%
             day = wday(date_time, label = TRUE),
             qtr = paste0("Q", quarter(date_time, with_year = FALSE)),
             wk = week(date_time))
-
-hr_labels <- unlist(lapply(seq(3,21,3),
-                           function(x) ifelse(x>10,
-                                              paste0(x, ":00"),
-                                              paste0("0", x, ":00"))))
-
-theme_heatmap <- theme(panel.background = element_blank(),
-                       panel.border = element_blank(),
-                       axis.line = element_blank(),
-                       axis.ticks = element_blank(),
-                       axis.text.y = element_text(angle = 33, hjust = 1, size = 8),
-                       axis.text.x = element_text(angle = 33, vjust = 1, hjust = 1),
-                       strip.background = element_blank())
 ```
 
 
-```{r, echo = FALSE}
+```{r grid_load_plots, echo = FALSE}
 tabsetPanel(
   tabPanel("Annual",
            inputPanel(
@@ -267,7 +299,7 @@ tabsetPanel(
                             "Std. Dev." = "sd"))
            ),
            
-           heatmap <- renderPlot({
+           output$heatmap <- renderPlot({
             nyiso_load.var <- nyiso_load.min %>% 
                 select(-date_time, -wk) %>% 
                 group_by(qtr, day, hr) %>% 
@@ -300,14 +332,20 @@ tabsetPanel(
                        1, 52, value = c(1,52))
          ),
 
-         year_plot <- renderPlot({
+         output$year_plot <- renderPlot({
            nyiso_load.week <- nyiso_load.min %>%
-             select(mw, wk, date_time) %>%
-             filter(wk >= input$weeks[1] & wk <= input$weeks[2])
+             select(contains("mw"), wk, date_time) %>%
+             filter(wk >= input$weeks[1] & wk <= input$weeks[2]) %>% 
+             mutate(mw_hr_avg = RcppRoll::roll_meanr(x = mw,
+                                                     n = 300,
+                                                     fill = "left"))
 
            ggplot(nyiso_load.week,
                   aes(y = mw, x = date_time)) +
-               geom_line() +
+               geom_line(size = 1.1) +
+               geom_line(aes(y = mw_hr_avg),
+                         colour = cbb_qual.n[["PV"]],
+                         size = 1.33) +
                labs(x = "",
                     y = "MW") +
                theme_base
@@ -319,4 +357,5 @@ tabsetPanel(
 
 Ultimately, we can then estimate the marginal emissions associated with building energy use at any given time.
 
+## References
 
