@@ -1,5 +1,5 @@
 ---
-title: "Battery LCA Workflow"
+title: "Estimating Marginal Emissions of the Electrical Grid"
 author: "Julian Ricardo"
 date: "March 15, 2017"
 output: html_document
@@ -60,9 +60,33 @@ make_dispatch <- function(.data) {
            plc2erta_wtd = namepcap*plc2erta,
            plc2erta_cumul = cumsum(plc2erta_wtd)/namepcap_cumul)
 }
+calc_plc2erta <- function(.data, dispatch) {
+  runs <- unique(dispatch$run)
+
+  cols <- cbind.data.frame(sapply(runs, function(n) {
+           approx(x = filter(dispatch, run == n)$namepcap_cumul,
+                  y = filter(dispatch, run == n)$plc2erta_cumul,
+                  xout = .data$mw)$y})
+  )
+  names(cols) <- sapply(runs, function(n) paste0("plc2erta_", n))
+  
+  cbind.data.frame(.data, cols)
+}
 ```
 
-This R Markdown document will run through the systems developed to estimate the time-dependent emissions impacts of using solar and energy storage to shave peak loads in buildings.
+This R Markdown document will run through the initial procedure for estimating the time-dependent emissions impacts of using solar and energy storage to shave peak loads in buildings. The steps detailed below, using the NYISO[@NewYorkIndependentSystemOperator2014] electrical grid as a case study, involve:
+
+1. Tidying power plant data
+2. Adapting a cost-based model[@Gilmore2010] for determining dispatch order of power plants
+3. Applying dispatch model to a grid load profile
+
+Generally speaking, this method of estimating the emissions impacts of various induced changes in the consumption of grid electricity can be applied to:
+
+- Renewable or distributed energy generation/storage
+- Changes in energy consumption behavior
+- Energy efficiency measures
+
+Based on the work in this [repo](https://github.com/jric376/clca-batt), the focus here is on the first application. Following steps (e.g. setting up building energy consumption, solar, and storage models) are left for interactive notebooks to follow.
 
 ****
 
@@ -97,9 +121,9 @@ theme_base <- theme(text = element_text(size = 14),
                     theme(legend.position = "none")
 ```
 
-First, we load up data on power plants from the electrical grid of interest, based on territory name. We will focus on the nameplate capacities and CO2-equivalent emissions rates of these plants, though the full dataset and accompanying documentation for the US EPA's eGrid2012[@eGRID2012] data are available [here](https://www.epa.gov/energy/emissions-generation-resource-integrated-database-egrid).
+First, we load up data on power plants from the electrical grid of interest, based on territory name. We will focus on the nameplate capacities and CO~2~eq emissions rates of these plants, though the full dataset and accompanying documentation for the US EPA's eGrid2012[@eGRID2012] data are available [here](https://www.epa.gov/energy/emissions-generation-resource-integrated-database-egrid).
 
-The code below also assigns marginal costs to each power plant by fuel type and generator type, calculated based on methods[@Gilmore2010] in the literature and publicly available data[@EIA2014b, @EIA2015, @EIA2014a]. In so doing, we estimate the priority with which power plants fire. Documented capacity factors may also be incorporated into future iterations of the grid dispatch model.
+The code below also assigns marginal costs to each power plant by fuel type and generator type, calculated based on methods[@Gilmore2010] in the literature and publicly available data[@EIA2014b, @EIA2015, @EIA2014a]. In so doing, we estimate the priority with which power plants fire. Documented capacity factors may also be incorporated into future iterations of the grid dispatch model; they are displayed for reference only.
 
 ```{r scrub_plants}
 plants <- data.table::fread("input/plants_all.csv") %>%
@@ -130,7 +154,7 @@ df <- reactive({
            "SD CO2eq" = plc2erta_sd,
            "Median Cap. Factor" = capfac_median,
            "SD Cap. Factor" = capfac_sd)
-    })
+})
 
 tabsetPanel(
   tabPanel("Graph",
@@ -174,9 +198,9 @@ tabsetPanel(
 
 ## NYISO case study
 
-Depending on the level of cumulative demand for electricity, grid operators allow bids for energy to be supplied until enough are submitted to satisfy load. At this point, the grid operator will pay all accepted bidders the highest marginal cost among all accepted bids.
+Depending on the degree of demand for electricity at the grid level, its operators (i.e. NYISO) allow bids for energy to be put forth until enough are submitted to satisfy the load. At this point, the grid operator pays all accepted bidders the highest marginal cost among all accepted bids.
 
-Assuming that the subset of power plants that fire follows this model, we can then estimate the grid's time-varying cumulative emissions rate. Since we have a 5-min load profile from NYISO, we use NYISO power plants to for all following visualizations.
+Assuming that the marginal cost model approximates the subset of power plants that would actually fire at a given load level, we can then estimate the grid's cumulative emissions rate as well. To account for systematic uncertainties in the estimates, we compute emissions from multiple iterations of the dispatch model and display the resulting distribution. We use NYISO power plants for all following visualizations. 
 
 ### Drawing a dispatch order curve
 
@@ -185,9 +209,10 @@ nyiso_disp <- filter(plants, isorto == "NYISO") %>%
   make_dispatch() %>% 
   mutate(run = 1)
 
+disp_runs <- 10
 full_disp <- nyiso_disp
 
-for (i in 1:10) {
+for (i in 1:disp_runs) {
     disp <- make_dispatch(nyiso_disp) %>% 
       mutate(run = i)
     full_disp <- rbind.data.frame(full_disp, disp)
@@ -210,9 +235,9 @@ tabsetPanel(
             #   style="color: #fff; background-color: #999999; border-color: #999999")
           ),
 
-          renderPlot({units <- ifelse(input$var2 == "mc_rand",
-                                      "$ / kWh",
-                                      "g CO2eq / kWh")
+          renderPlot({units <- switch(input$var2,
+                                      mc_rand = "$ / kWh",
+                                      plc2erta = "g CO2eq / kWh")
                       
                       input$run_select
                       
@@ -262,13 +287,12 @@ tabsetPanel(
 
 ### Visualizing Grid Load Profile
 
-So far, we've only considered part of the problem. The power plants that fire are important, but they will change as costs and demands for energy fluctuate in time. Below, view weekly snapshots of the NYISO load profile, or a full-year heatmap. Of course, there are geospatial effects too, but we ignore them here.
+So far, we've only considered part of the problem. Knowing the subset of power plants that will fire is important, but the subset will change as costs and demands for energy fluctuate in time. We must therefore apply the dispatch curve model to a load profile[@NewYorkIndependentSystemOperator2014] of the electrical grid, as shown in the 'Weekly Load' tab below. From there, we can then generate time-varying estimates of the marginal emissions associated with grid electricity use throughout the year, as in the 'Quarterly Heatmap' tab.
 ```{r grid_load_setup, include = FALSE}
 hr_labels <- unlist(lapply(seq(3,21,3),
                            function(x) ifelse(x>10,
                                               paste0(x, ":00"),
                                               paste0("0", x, ":00"))))
-
 theme_heatmap <- theme(text = element_text(size = 14),
                        panel.background = element_blank(),
                        panel.border = element_blank(),
@@ -286,25 +310,63 @@ nyiso_load.min <- data.table::fread("input/2014pal_combined.csv") %>%
             hr = hour(date_time),
             day = wday(date_time, label = TRUE),
             qtr = paste0("Q", quarter(date_time, with_year = FALSE)),
-            wk = week(date_time))
+            wk = week(date_time)) %>% 
+  calc_plc2erta(full_disp) %>% 
+  gather(run, plc2erta, plc2erta_1:plc2erta_10)
 ```
 
-
 ```{r grid_load_plots, echo = FALSE}
+units <- reactive({switch(input$load_param,
+                          mw = "MW",
+                          plc2erta = bquote(scriptstyle("g CO2eq / kWh")))})
+         
+nyiso_load.week <- reactive({
+  nyiso_load.min %>%
+   select(run, wk, date_time, mw, contains("plc2erta")) %>%
+   filter(wk >= input$weeks[1] & wk <= input$weeks[2]) %>%
+   mutate(mw_hr_avg = RcppRoll::roll_meanr(x = mw,
+                                           n = 540,
+                                           fill = "left"))
+})
+
 tabsetPanel(
-  tabPanel("Annual",
+  tabPanel("Weekly Load",
+    inputPanel(
+     sliderInput("weeks", "Weeks to display:",
+                 1, 52, value = c(1,52))
+    ),
+    
+    output$load_plot <- renderPlot({
+     ggplot(nyiso_load.week(),
+            aes(x = date_time,
+                y = nyiso_load.week()[["mw"]])) +
+         geom_line(size = 1.1) +
+         geom_line(aes(y = nyiso_load.week()[["mw_hr_avg"]]),
+                   colour = cbb_qual.n[["PV"]],
+                   size = 1.33) +
+         labs(x = "",
+              y = "MW") +
+         theme_base
+    })
+  ),
+  tabPanel("Quarterly Heatmap",
            inputPanel(
-             radioButtons("var3", "Variable to display:",
+             radioButtons("load_param", "Quantity to display:",
+                           c("MW" = "mw",
+                             "EF (kg CO2eq / MWh)" = "plc2erta")),
+             radioButtons("var3", "Mean or Std. Dev.:",
                           c("Mean" = "mean",
                             "Std. Dev." = "sd"))
            ),
            
            output$heatmap <- renderPlot({
-            nyiso_load.var <- nyiso_load.min %>% 
-                select(-date_time, -wk) %>% 
-                group_by(qtr, day, hr) %>% 
+            nyiso_load.var <- nyiso_load.min %>%
+                group_by(run, qtr, day, hr) %>% 
+                select(run, qtr, day, hr,
+                       -date_time, -wk,
+                       contains(input$load_param)) %>% 
                 summarise_all(c("mean", "sd")) %>%
-                select(hr, day, qtr, contains(input$var3)) %>% 
+                select(run, qtr, day, hr, contains(input$var3)) %>% 
                 melt(id.vars = c("qtr", "day", "hr"),
                      measure.vars = input$var3) %>%
                 ddply(.(variable), transform, rescale = scale(value)) %>% 
@@ -318,44 +380,25 @@ tabsetPanel(
                scale_x_continuous(breaks = seq(2,20,3),
                                   labels = hr_labels,
                                   expand = c(0,0)) +
-               scale_fill_gradient2(name = "MW", low = "#7b3294", high = "#008837",
+               scale_fill_gradient2(name = units(), low = "#7b3294", high = "#008837",
                                     midpoint = mean(nyiso_load.var$value)) +
                labs(x = "",
                     y = "") +
                theme_heatmap
            })
-  ),
-  tabPanel("Weekly",
-        
-         inputPanel(
-           sliderInput("weeks", "Weeks to display:",
-                       1, 52, value = c(1,52))
-         ),
-
-         output$year_plot <- renderPlot({
-           nyiso_load.week <- nyiso_load.min %>%
-             select(contains("mw"), wk, date_time) %>%
-             filter(wk >= input$weeks[1] & wk <= input$weeks[2]) %>% 
-             mutate(mw_hr_avg = RcppRoll::roll_meanr(x = mw,
-                                                     n = 300,
-                                                     fill = "left"))
-
-           ggplot(nyiso_load.week,
-                  aes(y = mw, x = date_time)) +
-               geom_line(size = 1.1) +
-               geom_line(aes(y = mw_hr_avg),
-                         colour = cbb_qual.n[["PV"]],
-                         size = 1.33) +
-               labs(x = "",
-                    y = "MW") +
-               theme_base
-         })
   )
 )
 ```
 
 
-Ultimately, we can then estimate the marginal emissions associated with building energy use at any given time.
+## Future work
+
+- Accounting to some extent for geospatial constraints of electrical grid
+- Address apparent lack of petro-fuels plants firing
+- Incorporating published capacity factors into with marginal cost model
+- Compile load profiles from different electric grids and years
+
+****
 
 ## References
 
