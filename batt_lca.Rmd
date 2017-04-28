@@ -10,11 +10,7 @@ csl: nature.csl
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-<<<<<<< HEAD
 library(dygraphs); library(xts); library(zoo)
-=======
-library(dygraphs)
->>>>>>> 59baa622791f56cfd3e13c6fe13f823c0671c4f2
 library(plyr)
 library(tidyverse)
 library(lubridate)
@@ -325,7 +321,6 @@ nyiso_load.min <- data.table::fread("input/2014pal_combined.csv") %>%
 units <- reactive({switch(input$load_param,
                           mw = "MW",
                           plc2erta = bquote(scriptstyle("g CO2eq / kWh")))})
-<<<<<<< HEAD
 
 tabsetPanel(
   tabPanel("Weekly Load Sample",
@@ -347,35 +342,6 @@ tabsetPanel(
         dySeries(c("lwr", "mw", "upr"), label = "MW") %>%
         dyAxis("y", label = "MW") %>% 
         dyOptions(drawGrid = FALSE)
-=======
-         
-nyiso_load.xts <- reactive({
-  nyiso_ts <- nyiso_load.min %>%
-    filter(run == "plc2erta_1") %>% 
-    select(wk, date_time, mw) %>%
-    mutate(mw_daily_avg = RcppRoll::roll_meanr(x = mw, n = 288, fill = NA)) %>%
-    fill(mw_daily_avg, .direction = "up") %>%
-    select(-wk)
-  
-  nyiso_ts <- right_join(nyiso_ts,
-                         data.frame(date_time = seq.POSIXt(nyiso_ts$date_time[1],
-                           nyiso_ts$date_time[nrow(nyiso_ts)],
-                           by="5 mins")), by = "date_time")
-  
-  # rownames(nyiso_ts) <- nyiso_ts[["date_time"]]
-  xts(select(nyiso_ts, -date_time), nyiso_ts$date_time, by="5 mins")
-})
-
-tabsetPanel(
-  tabPanel("Weekly Load",
-    output$load_dygraph <- renderDygraph({
-      dygraph(nyiso_load.xts(),
-              ylab = "MW") %>% 
-        dySeries("mw", color = cbb_qual.n[["Petro-fuels"]]) %>%
-        dySeries("mw_daily_avg", color = cbb_qual.n[["PV"]], strokeWidth = 2) %>% 
-        dyRangeSelector() %>% 
-        dyOptions(drawGrid = TRUE)
->>>>>>> 59baa622791f56cfd3e13c6fe13f823c0671c4f2
     })
     # output$load_plot <- renderPlot({
     #  ggplot(nyiso_load.week(),
