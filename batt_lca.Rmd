@@ -10,6 +10,7 @@ csl: nature.csl
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+library(dygraphs); library(xts); library(zoo)
 library(plyr)
 library(tidyverse)
 library(lubridate)
@@ -209,7 +210,7 @@ nyiso_disp <- filter(plants, isorto == "NYISO") %>%
   make_dispatch() %>% 
   mutate(run = 1)
 
-disp_runs <- 10
+disp_runs <- 5
 full_disp <- nyiso_disp
 
 for (i in 1:disp_runs) {
@@ -230,7 +231,7 @@ tabsetPanel(
                            "Cumul. EF (g CO2eq / kWh)" = "plc2erta_cumul")),
             
             sliderInput("run_select", "Select a curve:",
-                        1, 10, 1, ticks = FALSE)
+                        1, disp_runs, 1, ticks = FALSE)
             # actionButton("redraw", "Redraw curve",
             #   style="color: #fff; background-color: #999999; border-color: #999999")
           ),
@@ -312,41 +313,34 @@ nyiso_load.min <- data.table::fread("input/2014pal_combined.csv") %>%
             qtr = paste0("Q", quarter(date_time, with_year = FALSE)),
             wk = week(date_time)) %>% 
   calc_plc2erta(full_disp) %>% 
-  gather(run, plc2erta, plc2erta_1:plc2erta_10)
+  gather(run, plc2erta, contains("plc2erta_"))
 ```
 
 ```{r grid_load_plots, echo = FALSE}
 units <- reactive({switch(input$load_param,
                           mw = "MW",
                           plc2erta = bquote(scriptstyle("g CO2eq / kWh")))})
-         
-nyiso_load.week <- reactive({
-  nyiso_load.min %>%
-   select(run, wk, date_time, mw, contains("plc2erta")) %>%
-   filter(wk >= input$weeks[1] & wk <= input$weeks[2]) %>%
-   mutate(mw_hr_avg = RcppRoll::roll_meanr(x = mw,
-                                           n = 540,
-                                           fill = "left"))
-})
 
 tabsetPanel(
-  tabPanel("Weekly Load",
-    inputPanel(
-     sliderInput("weeks", "Weeks to display:",
-                 1, 52, value = c(1,52))
-    ),
-    
-    output$load_plot <- renderPlot({
-     ggplot(nyiso_load.week(),
-            aes(x = date_time,
-                y = nyiso_load.week()[["mw"]])) +
-         geom_line(size = 1.1) +
-         geom_line(aes(y = nyiso_load.week()[["mw_hr_avg"]]),
-                   colour = cbb_qual.n[["PV"]],
-                   size = 1.33) +
-         labs(x = "",
-              y = "MW") +
-         theme_base
+  tabPanel("Weekly Load Sample",
+    output$load_plot <- renderDygraph({
+      nyiso_load.min <- nyiso_load.min %>%
+        select(run, wk, date_time, mw) %>% # contains("plc2erta")
+        filter(run == "plc2erta_3",
+               wk >= 28 & wk <= 32) %>% 
+        mutate(roll_sd = RcppRoll::roll_sdr(mw, 540),
+               upr = mw + roll_sd,
+               lwr = mw - roll_sd) %>%
+        na.omit()
+      
+      load_xts <- nyiso_load.min %>% 
+        select(-run, -date_time, -contains("roll_")) %>% 
+        xts(order.by = nyiso_load.min$date_time)
+      
+      dygraph(load_xts) %>% 
+        dySeries(c("lwr", "mw", "upr"), label = "MW") %>%
+        dyAxis("y", label = "MW") %>% 
+        dyOptions(drawGrid = FALSE)
     })
   ),
   tabPanel("Quarterly Heatmap",
@@ -398,7 +392,13 @@ tabsetPanel(
 - Incorporating published capacity factors into with marginal cost model
 - Compile load profiles from different electric grids and years
 
+```{r}
+sessionInfo()
+```
+
 ****
 
 ## References
+
+
 
