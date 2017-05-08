@@ -31,7 +31,7 @@ Every building simulation generates time-series representing the building load p
 
 ### Load profiles
 
-In the figures below, the red dotted line represents the peak shaving threshold for the sample time-series, set at $50\%$ of annual peak demand: `r round(dmd_thresh, 0)` kW.
+When plotting kW, the red dotted line represents the peak shaving threshold for the sample supermarket load profile, set at $50\%$ of annual peak demand: `r round(dmd_thresh, 0)` kW.
 
 ```{r load_ts_prep, echo=FALSE}
 set.seed(rand_seed)
@@ -46,64 +46,68 @@ summer_sample <- market_ts.raw %>%
   mutate( wk = week(date_time)) %>% 
   filter(wk == sample(unique(.$wk), 1)) %>% 
   select(-wk, -curtail_kw)
-
-winter_xts <- winter_sample %>% 
-  select(date_time, ends_with("_kw")) %>% 
-  tidyquant::as_xts(date_time)
-winter_soc <- winter_sample %>% 
-  select(date_time, soc) %>%
-  tidyquant::as_xts(date_time)
-
-summer_xts <- summer_sample %>% 
-  select(date_time, ends_with("_kw")) %>%
-  tidyquant::as_xts(date_time)
-summer_soc <- summer_sample %>% 
-  select(date_time, soc) %>%
-  tidyquant::as_xts(date_time)
 ```
 
 
 ```{r load_ts, echo=FALSE}
+winter_xts <- reactive({
+  switch(input$var,
+         kw = winter_sample %>% 
+                select(date_time, ends_with("_kw")) %>% 
+                tidyquant::as_xts(date_time),
+         soc = winter_sample %>% 
+  select(date_time, soc) %>%
+  tidyquant::as_xts(date_time))
+})
+
+summer_xts <- reactive({
+  switch(input$var,
+         kw = summer_sample %>% 
+                select(date_time, ends_with("_kw")) %>%
+                tidyquant::as_xts(date_time),
+         soc = summer_soc <- summer_sample %>% 
+                select(date_time, soc) %>%
+                tidyquant::as_xts(date_time))
+})
+
+label <- reactive({
+  switch(input$var,
+         kw = "kW",
+         soc = "SoC")
+})
+
+# NEED TO ADD PLC2ERTA VISUALIZATION
+inputPanel(radioButtons("var", "Variable to display:",
+                        c("kW" = "kw", "SoC" = "soc"),
+                        inline = TRUE))
 tabsetPanel(
   tabPanel("Winter",
             output$winter_xts <-  renderDygraph({
-              dygraph(winter_xts) %>% 
-                dyAxis("y", label = "kW") %>%
+              dygraph(winter_xts()) %>% 
+                dyAxis("y", label = label()) %>%
                 dyLimit(dmd_thresh, color = "red") %>% 
                 dyLegend(width = 300) %>% 
                 dyRoller(rollPeriod = 12) %>% 
                 dyOptions(drawGrid = FALSE, fillGraph = TRUE,
                          colors = RColorBrewer::brewer.pal(5, "Dark2"))
-            }),
-            output$winter_soc <- renderDygraph({
-              dygraph(winter_soc) %>% 
-                dySeries("V1", label = "SoC") %>% 
-                dyAxis("y", label = "SoC") %>%
-                dyRoller(rollPeriod = 12) %>% 
-                dyOptions(drawGrid = FALSE, fillGraph = TRUE,
-                         colors = RColorBrewer::brewer.pal(1, "Dark2"))
             })
   ),
   tabPanel("Summer",
            output$summer_xts <- renderDygraph({
-             dygraph(summer_xts) %>% 
-               dyAxis("y", label = "kW") %>%
+             dygraph(summer_xts()) %>% 
+               dyAxis("y", label = label()) %>%
                dyLimit(dmd_thresh, color = "red") %>% 
                dyLegend(width = 300) %>% 
                 dyRoller(rollPeriod = 12) %>% 
                dyOptions(drawGrid = FALSE, fillGraph = TRUE,
                          colors = RColorBrewer::brewer.pal(5, "Dark2"))
-           }),
-           output$summer_soc <- renderDygraph({
-             dygraph(summer_soc) %>% 
-               dySeries("V1", label = "SoC") %>% 
-               dyAxis("y", label = "SoC") %>%
-               dyRoller(rollPeriod = 12) %>% 
-               dyOptions(drawGrid = FALSE, fillGraph = TRUE,
-                         colors = RColorBrewer::brewer.pal(1, "Dark2"))
            })
   )
 )
 ```
 
-# Summary
+# Results
+
+Compiling net emissions and utility rates from year-long simulations of the PV-battery systems shown operating in the plots above, we can draw performance curves for them in terms of these variables. On the vertical axis, we show annual normalized profits (or costs) of operating such a system. On the horizontal, we plot the net emissions impact of the system, incorporating marginal emissions ($\mathrm{CO}_2\mathrm{eq}$) from grid electricity; negative means a net reduction in emissions. Both figures are normalized either by the throughput (in kWh) of the PV-battery system, or the annual kWh consumption of the building prior to implementing peak shaving.
+
+First, a look at the set of simulated supermarket runs, where we've already seen sample load profiles.
