@@ -76,7 +76,10 @@ label <- reactive({
          soc = "SoC")
 })
 
+<<<<<<< HEAD
 # NEED TO ADD PLC2ERTA VISUALIZATION
+=======
+>>>>>>> origin/master
 inputPanel(radioButtons("var", "Variable to display:",
                         c("kW" = "kw", "SoC" = "soc"),
                         inline = TRUE))
