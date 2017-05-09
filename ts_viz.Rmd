@@ -8,41 +8,45 @@ bibliography: batt_lca_shiny.bib
 csl: nature.csl
 ---
 
-```{r setup, include=FALSE, message=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-library(dygraphs); library(xts); library(zoo)
-library(plyr)
-library(tidyverse)
-library(lubridate)
-library(reshape2)
-library(xts)
+# Sample simulation results
+
+Every building simulation generates time-series representing the building load profile before and after peak shaving, in addition to the generation and (dis)charge profiles for the solar and battery systems, respectively. We can visualize these concurrent time-series using a sample run from a simulated supermarket (located in NYC), shaving peak demand by $50\%$ in conjunction with a 487 kWh vanadium redox flow battery and a 234 kWh photovoltaic array.
+
+First, we load up the relevant data, packages, and helper functions.
+
+```{r setup, message=FALSE}
+library(dygraphs); library(scatterD3)
+library(xts); library(zoo); library(lubridate)
+library(plyr); library(reshape2); library(tidyverse)
+to_kg <- function(lb_val) {
+  return(lb_val/2.205)
+}
 market_ts.raw <- list.files("input", pattern = "market.*run\\.csv", full.names = TRUE) %>% 
   read.csv() %>% 
   mutate(X = NULL,
-         date_time = ymd_hm(date_time))
+         date_time = ymd_hm(date_time),
+         net_plc2erta = to_kg(grid_plc2erta - bldg_plc2erta)) %>% 
+  select(-grid_plc2erta, -bldg_plc2erta)
+results.raw <- feather::read_feather("input/full_df.feather")
 
 dmd_thresh <- max(market_ts.raw$bldg_kw)*0.5
 rand_seed <- 12387
 ```
 
-# Sample simulation results
-
-Every building simulation generates time-series representing the building load profile before and after peak shaving, in addition to the generation and (dis)charge profiles for the solar and battery systems, respectively. We can visualize these concurrent time-series using a sample run from a simulated supermarket, shaving peak demand by $50\%$ in conjunction with a 487 kWh vanadium redox flow battery and a 234 kWh photovoltaic array.
-
 ### Load profiles
 
-When plotting kW, the red dotted line represents the peak shaving threshold for the sample supermarket load profile, set at $50\%$ of annual peak demand: `r round(dmd_thresh, 0)` kW.
+We take sample weeks from Winter and Summer months to show how load shape and other simulated variables change with the seasons. When plotting kW, the red dotted line represents the peak shaving threshold for the sample supermarket load profile, set at $50\%$ of annual peak demand, or `r round(dmd_thresh, 0)` kW.
 
-```{r load_ts_prep, echo=FALSE}
+```{r load_ts_prep}
 set.seed(rand_seed)
 winter_sample <- market_ts.raw %>% 
-  filter(month(date_time) == 1) %>% 
+  filter(month(date_time) == 1 | month(date_time) == 2) %>% 
   mutate(wk = week(date_time)) %>% 
   filter(wk == sample(unique(.$wk), 1)) %>% 
   select(-wk, -curtail_kw)
 
 summer_sample <- market_ts.raw %>% 
-  filter(month(date_time) == 8) %>% 
+  filter(month(date_time) == 7 | month(date_time) == 8) %>% 
   mutate( wk = week(date_time)) %>% 
   filter(wk == sample(unique(.$wk), 1)) %>% 
   select(-wk, -curtail_kw)
@@ -56,8 +60,12 @@ winter_xts <- reactive({
                 select(date_time, ends_with("_kw")) %>% 
                 tidyquant::as_xts(date_time),
          soc = winter_sample %>% 
-  select(date_time, soc) %>%
-  tidyquant::as_xts(date_time))
+                 select(date_time, soc) %>%
+                 tidyquant::as_xts(date_time),
+         del_plc2erta = winter_sample %>% 
+                select(date_time, net_plc2erta) %>%
+                tidyquant::as_xts(date_time)
+  )
 })
 
 summer_xts <- reactive({
@@ -65,24 +73,26 @@ summer_xts <- reactive({
          kw = summer_sample %>% 
                 select(date_time, ends_with("_kw")) %>%
                 tidyquant::as_xts(date_time),
-         soc = summer_soc <- summer_sample %>% 
+         soc = summer_sample %>% 
                 select(date_time, soc) %>%
-                tidyquant::as_xts(date_time))
+                tidyquant::as_xts(date_time),
+         del_plc2erta = summer_sample %>% 
+                select(date_time, net_plc2erta) %>% 
+                tidyquant::as_xts(date_time)
+  )
 })
 
 label <- reactive({
   switch(input$var,
          kw = "kW",
-         soc = "SoC")
+         soc = "SoC",
+         del_plc2erta = "kg CO2eq / kWh")
 })
 
-<<<<<<< HEAD
-# NEED TO ADD PLC2ERTA VISUALIZATION
-=======
->>>>>>> origin/master
 inputPanel(radioButtons("var", "Variable to display:",
-                        c("kW" = "kw", "SoC" = "soc"),
-                        inline = TRUE))
+                        c("kW" = "kw", "SoC" = "soc",
+                          "kg CO2eq / kWh" = "del_plc2erta"),
+                        inline = TRUE, width = 400))
 tabsetPanel(
   tabPanel("Winter",
             output$winter_xts <-  renderDygraph({
@@ -101,7 +111,7 @@ tabsetPanel(
                dyAxis("y", label = label()) %>%
                dyLimit(dmd_thresh, color = "red") %>% 
                dyLegend(width = 300) %>% 
-                dyRoller(rollPeriod = 12) %>% 
+               dyRoller(rollPeriod = 12) %>% 
                dyOptions(drawGrid = FALSE, fillGraph = TRUE,
                          colors = RColorBrewer::brewer.pal(5, "Dark2"))
            })
@@ -111,6 +121,74 @@ tabsetPanel(
 
 # Results
 
-Compiling net emissions and utility rates from year-long simulations of the PV-battery systems shown operating in the plots above, we can draw performance curves for them in terms of these variables. On the vertical axis, we show annual normalized profits (or costs) of operating such a system. On the horizontal, we plot the net emissions impact of the system, incorporating marginal emissions ($\mathrm{CO}_2\mathrm{eq}$) from grid electricity; negative means a net reduction in emissions. Both figures are normalized either by the throughput (in kWh) of the PV-battery system, or the annual kWh consumption of the building prior to implementing peak shaving.
+Compiling net emissions and utility rates from year-long simulations of the PV-battery systems shown operating in the plots above, we can draw performance curves for them in terms of these variables. On the vertical axis, we show annual normalized profits (or costs) of operating such a system. On the horizontal, we plot the net emissions impact of the system, incorporating marginal emissions (CO~2~eq) from grid electricity; negative means a net reduction in emissions. Both figures are normalized either by the throughput (in kWh) of the PV-battery system, or the annual kWh consumption of the building prior to implementing peak shaving.
 
 First, a look at the set of simulated supermarket runs, where we've already seen sample load profiles.
+
+```{r, echo=FALSE}
+results <- results.raw %>% 
+  select(bldg, dmd_frac, batt_type, batt_cap,
+         contains("func"), ends_with("_n")) %>% 
+  mutate(bldg = mapvalues(bldg,
+                          from = levels(.$bldg),
+                          to = c("Apts", "Office",
+                                 "Market", "Hospital")),
+         bldg = as.character(bldg),
+         batt_cap = round(batt_cap, 0)) %>% 
+  filter(prof_lo_n > -1) %>% 
+  as.data.frame()
+```
+
+```{r mrkt_results}
+filter(results, bldg == "Market") %>% 
+ggplot(aes(x = plc2erta_n, y = prof_lo_n,
+           shape = batt_type, size = batt_cap)) +
+  geom_point(alpha = 1/1.5) +
+  coord_cartesian(ylim = c(-1,0.01)) +
+  scale_size(labels = c(10,100,">1000"),
+             breaks = c(10,100,1000),
+             trans = "sqrt",
+             range = c(1.5,7),
+             guide = guide_legend(override.aes = list(alpha = 1,
+                                                      size = c(1.5,4,6)))) +
+  scale_shape_manual(values = c(16,18,3,15), # to correspond to scatterD3 defaults
+                     guide = guide_legend(override.aes = list(alpha = 1, size = 3))) +
+  labs(x = "kg CO2eq / kWh",
+       y = "$ / kWh",
+       shape = "Batt Chemistry",
+       size = "Batt Capacity (kWh)")
+
+```
+
+At first glance, we see:
+
+- no profitable simulation results
+- greater levels of peak shaving correspond monotonically with larger capacities, less profitable outcomes
+- there is little discernible difference between performance curves across battery chemistry (w slight exception for vanadium redox flow)
+- net reductions in CO~2~eq plateau between $-0.3$ and $-0.25$ kg / kWh, then swing back towards net-positive at higher deg. of peak shaving
+
+Next, we can compare simulation results across all buildings.
+
+```{r all_results, echo=FALSE}
+tooltips <- paste(results$bldg,
+                  paste(results$batt_type, results$batt_cap, "kWh"),
+                  paste0("shaving ", results$dmd_frac*100, "%"), sep = ", ")
+
+scatterD3(data = results, x = plc2erta_n, y = prof_lo_n,
+          symbol_var = batt_type, col_var = bldg, size_var = batt_cap,
+          point_opacity = 0.5, hover_opacity = 1, hover_size = 5,
+          size_range = c(25,500), tooltip_text = tooltips, col_lab = "Building", 
+          symbol_lab = "Batt Chemistry", size_lab = "Batt Capacity (kWh)")
+```
+
+Some key takewaways:
+
+See the paper [here](https://www.researchgate.net/publication/313819148_A_framework_for_comparing_the_economic_performance_and_associated_emissions_of_grid-connected_battery_storage_systems_in_existing_building_stock_a_NYISO_case_study) for more detailed treatment of this material, and a full reference list.
+
+```{r}
+sessionInfo()
+```
+
+****
+
+## References

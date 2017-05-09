@@ -397,13 +397,14 @@ tabsetPanel(
 )
 ```
 
-
 ## Future work
 
 - Accounting to some extent for geospatial constraints of electrical grid
 - Address apparent lack of petro-fuels plants firing
 - Incorporating published capacity factors into with marginal cost model
 - Compile load profiles from different electric grids and years
+
+See the paper [here](https://www.researchgate.net/publication/313819148_A_framework_for_comparing_the_economic_performance_and_associated_emissions_of_grid-connected_battery_storage_systems_in_existing_building_stock_a_NYISO_case_study) for more detailed treatment of this material, and a full reference list.
 
 ```{r}
 sessionInfo()
