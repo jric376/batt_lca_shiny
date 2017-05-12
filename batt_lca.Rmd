@@ -1,5 +1,5 @@
 ---
-title: "Estimating Marginal Emissions of the Electrical Grid"
+title: "Estimating marginal emissions of the electrical grid"
 author: "Julian Ricardo"
 date: "March 15, 2017"
 output: html_document
@@ -9,13 +9,10 @@ csl: nature.csl
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-library(dygraphs); library(xts); library(zoo)
-library(plyr)
-library(tidyverse)
-library(lubridate)
-library(reshape2)
-library(xts)
+library(xts); library(zoo); library(lubridate)       # time-series
+library(plyr); library(reshape2); library(tidyverse) # data manipulation
+library(dygraphs)                                    # time-series viz
+library(RcppRoll)
 asinh_trans <- function(){
   trans_new(name = 'asinh', transform = function(x) asinh(x), 
             inverse = function(x) sinh(x))
@@ -76,7 +73,7 @@ calc_plc2erta <- function(.data, dispatch) {
 }
 ```
 
-This R Markdown document will run through the initial procedure for estimating the time-dependent emissions impacts of using solar and energy storage to shave peak loads in buildings. The steps detailed below, using the NYISO[@NewYorkIndependentSystemOperator2014] electrical grid as a case study, involve:
+This document will run through the initial procedure for estimating the time-dependent emissions impacts of using solar and energy storage to shave peak loads in buildings. The steps detailed below, using the NYISO[@NewYorkIndependentSystemOperator2014] electrical grid as a case study, involve:
 
 1. Tidying power plant data
 2. Adapting a cost-based model[@Gilmore2010] for determining dispatch order of power plants
@@ -88,7 +85,7 @@ Generally speaking, this method of estimating the emissions impacts of various i
 - Changes in energy consumption behavior
 - Energy efficiency measures
 
-Based on the work in this [repo](https://github.com/jric376/clca-batt), the focus here is on the first application. Following steps (e.g. setting up building energy consumption, solar, and storage models) are left for interactive notebooks to follow.
+Based on the work in this [repo](https://github.com/jric376/clca-batt), the focus here is on using this tool to estimate emissions impacts of distributed energy resources (DER).
 
 ****
 
@@ -329,7 +326,7 @@ tabsetPanel(
         select(run, wk, date_time, mw) %>% # contains("plc2erta")
         filter(run == "plc2erta_3",
                wk >= 28 & wk <= 32) %>% 
-        mutate(roll_sd = RcppRoll::roll_sdr(mw, 540),
+        mutate(roll_sd = roll_sdr(mw, 540),
                upr = mw + roll_sd,
                lwr = mw - roll_sd) %>%
         na.omit()

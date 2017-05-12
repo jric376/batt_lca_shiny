@@ -1,0 +1,10 @@
+name: grid_co2eq
+title: grid_CO2eq
+account: jric
+server: shinyapps.io
+appId: 180247
+bundleId: 826162
+url: https://jric.shinyapps.io/grid_co2eq/
+when: 1494615909.04704
+asMultiple: FALSE
+asStatic: FALSE

@@ -1,0 +1,10 @@
+name: bldg_load
+title: bldg_load
+account: jric
+server: shinyapps.io
+appId: 180248
+bundleId: 826171
+url: https://jric.shinyapps.io/bldg_load/
+when: 1494616617.64403
+asMultiple: FALSE
+asStatic: FALSE
